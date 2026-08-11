@@ -16,6 +16,8 @@ dependency tree is a profiler people refuse to adopt.
 package main
 
 import (
+    "context"
+    "log"
     "os"
     "time"
 
@@ -23,9 +25,9 @@ import (
 )
 
 func main() {
-    profiler.Start(profiler.Config{
+    p, err := profiler.Start(profiler.Config{
         APIKey:      os.Getenv("PROFILER_API_KEY"),
-        Endpoint:    "https://profiler.example.com",
+        Endpoint:    "https://pecgoprof.online",
         Service:     "payment-api",
         Environment: "production",
         Version:     "v1.4.2",
@@ -35,6 +37,11 @@ func main() {
         // automatic.
         HeapInterval: 10 * time.Minute,
     })
+    if err != nil {
+        // Not fatal: the service runs fine without profiling.
+        log.Printf("profiling disabled: %v", err)
+    }
+    defer p.Stop(context.Background())
 
     // ... your application ...
 }
