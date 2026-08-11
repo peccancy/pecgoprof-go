@@ -1,0 +1,4 @@
+# Local build output.
+/example/example
+*.pprof
+.DS_Store

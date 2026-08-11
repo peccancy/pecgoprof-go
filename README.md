@@ -3,7 +3,7 @@
 Collects Go pprof profiles and ships them to PecGoProf.
 
 ```bash
-go get github.com/peccancy/pprof_analizator/sdk
+go get github.com/peccancy/pecgoprof-go
 ```
 
 The package imports nothing outside the standard library. It is meant to sit
@@ -19,7 +19,7 @@ import (
     "os"
     "time"
 
-    profiler "github.com/peccancy/pprof_analizator/sdk"
+    profiler "github.com/peccancy/pecgoprof-go"
 )
 
 func main() {

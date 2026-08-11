@@ -16,7 +16,7 @@ import (
 
 	pprof "github.com/google/pprof/profile"
 
-	profiler "github.com/peccancy/pprof_analizator/sdk"
+	profiler "github.com/peccancy/pecgoprof-go"
 )
 
 // received is one upload the fake platform accepted.

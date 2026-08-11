@@ -21,7 +21,7 @@ import (
 	"syscall"
 	"time"
 
-	profiler "github.com/peccancy/pprof_analizator/sdk"
+	profiler "github.com/peccancy/pecgoprof-go"
 )
 
 // stdLogger adapts the standard library's logger to the SDK's interface. Any
