@@ -92,9 +92,25 @@ func Start(cfg Config) (*Profiler, error) {
 
 	p.uploader.start(&p.wg)
 
-	if cfg.HeapInterval > 0 {
+	// One goroutine per enabled kind. They tick independently because they
+	// answer different questions and nobody wants them coupled.
+	for _, periodic := range []struct {
+		interval time.Duration
+		name     string
+		capture  func() error
+	}{
+		{cfg.HeapInterval, "heap", p.CaptureHeap},
+		{cfg.CPUInterval, "cpu", func() error { return p.CaptureCPU(cfg.CPUDuration) }},
+		{cfg.GoroutineInterval, "goroutine", p.CaptureGoroutines},
+		{cfg.AllocsInterval, "allocs", p.CaptureAllocs},
+		{cfg.MutexInterval, "mutex", p.CaptureMutex},
+		{cfg.BlockInterval, "block", p.CaptureBlock},
+	} {
+		if periodic.interval <= 0 {
+			continue
+		}
 		p.wg.Add(1)
-		go p.heapLoop(cfg.HeapInterval)
+		go p.captureLoop(periodic.interval, periodic.name, periodic.capture)
 	}
 
 	logger.Debugf("profiler started: service=%s environment=%s instance=%s session=%s",
@@ -166,8 +182,11 @@ func (p *Profiler) InstanceID() string {
 // Enabled reports whether the profiler is actually collecting.
 func (p *Profiler) Enabled() bool { return p != nil && p.enabled }
 
-// heapLoop captures a heap profile on a fixed interval.
-func (p *Profiler) heapLoop(interval time.Duration) {
+// captureLoop takes one kind of profile on a fixed interval until Stop.
+//
+// A failed capture is logged and the loop carries on: profiling is not the
+// application's job, and one bad capture is not a reason to stop taking them.
+func (p *Profiler) captureLoop(interval time.Duration, name string, capture func() error) {
 	defer p.wg.Done()
 
 	ticker := time.NewTicker(interval)
@@ -178,8 +197,8 @@ func (p *Profiler) heapLoop(interval time.Duration) {
 		case <-p.stop:
 			return
 		case <-ticker.C:
-			if err := p.CaptureHeap(); err != nil {
-				p.logger.Errorf("periodic heap capture failed: %v", err)
+			if err := capture(); err != nil {
+				p.logger.Errorf("periodic %s capture failed: %v", name, err)
 			}
 		}
 	}

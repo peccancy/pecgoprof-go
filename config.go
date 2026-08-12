@@ -39,6 +39,9 @@ const (
 	// MinHeapInterval bounds periodic heap profiling. Anything faster is far
 	// more likely to be a typo than an intention.
 	MinHeapInterval = time.Minute
+
+	// MinCaptureInterval bounds every periodic capture, heap included.
+	MinCaptureInterval = time.Minute
 )
 
 // Logger receives the SDK's diagnostics. Supply one to see why profiles are
@@ -86,12 +89,30 @@ type Config struct {
 	// session per process start is the point.
 	SessionID string
 
-	// HeapInterval enables periodic heap profiling. Zero disables it. Values
-	// below MinHeapInterval are raised to it.
+	// The periodic captures. Every one is off until you give it an interval,
+	// and none of them has a default.
 	//
-	// There is deliberately no CPUInterval: continuous CPU profiling is not
-	// something to switch on by accident.
-	HeapInterval time.Duration
+	// That is deliberate, and it is the reason CPU profiling has to be named
+	// rather than inherited: a CPU profile stops the world briefly and costs
+	// real time to take, so it is not something to switch on by accident. But
+	// naming an interval is not an accident, and a profiler that can only ever
+	// report heap is not a profiler — it is half of one, which is what this
+	// used to be.
+	//
+	// Values below MinCaptureInterval are raised to it: the platform refuses
+	// captures faster than a plan allows, and a client that insists is only
+	// generating rejected uploads.
+	HeapInterval      time.Duration
+	CPUInterval       time.Duration
+	GoroutineInterval time.Duration
+	AllocsInterval    time.Duration
+	MutexInterval     time.Duration
+	BlockInterval     time.Duration
+
+	// CPUDuration is how long each CPU profile runs. Defaults to
+	// DefaultCPUDuration. It is clamped below CPUInterval, because a capture
+	// that outlives the gap to the next one would overlap itself.
+	CPUDuration time.Duration
 
 	// UploadTimeout bounds one upload attempt. Defaults to
 	// DefaultUploadTimeout.
@@ -120,8 +141,22 @@ func (c Config) withDefaults() Config {
 	if c.QueueSize <= 0 {
 		c.QueueSize = DefaultQueueSize
 	}
-	if c.HeapInterval > 0 && c.HeapInterval < MinHeapInterval {
-		c.HeapInterval = MinHeapInterval
+	for _, interval := range []*time.Duration{
+		&c.HeapInterval, &c.CPUInterval, &c.GoroutineInterval,
+		&c.AllocsInterval, &c.MutexInterval, &c.BlockInterval,
+	} {
+		if *interval > 0 && *interval < MinCaptureInterval {
+			*interval = MinCaptureInterval
+		}
+	}
+
+	if c.CPUDuration <= 0 {
+		c.CPUDuration = DefaultCPUDuration
+	}
+	// A CPU capture that runs longer than the gap to the next one would start
+	// again before it finished. Leave a margin rather than exactly meeting.
+	if c.CPUInterval > 0 && c.CPUDuration >= c.CPUInterval {
+		c.CPUDuration = c.CPUInterval / 2
 	}
 	if c.HTTPClient == nil {
 		c.HTTPClient = &http.Client{Timeout: c.UploadTimeout}
