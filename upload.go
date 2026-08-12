@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,17 +37,74 @@ type uploader struct {
 
 	queue     chan upload
 	closeOnce sync.Once
+
+	// notBefore is when each profile type may next be sent, as the server asked.
+	//
+	// The SDK keeps its own schedule and never retries, so nothing here can
+	// produce a storm. What it can produce is waste: a profiler configured to
+	// capture more often than the account allows would build and post the whole
+	// payload every time only to be told to wait, and log an error for each one
+	// — which reads like a broken integration rather than a server pacing a
+	// client that is asking for too much.
+	//
+	// Guarded by a mutex rather than left to the single worker goroutine so that
+	// the decision is still correct if this ever ships more than one.
+	mu        sync.Mutex
+	notBefore map[string]time.Time
 }
 
 func newUploader(cfg Config, logger Logger) *uploader {
 	return &uploader{
-		endpoint: strings.TrimRight(strings.TrimSpace(cfg.Endpoint), "/") + ingestPath,
-		apiKey:   strings.TrimSpace(cfg.APIKey),
-		client:   cfg.HTTPClient,
-		timeout:  cfg.UploadTimeout,
-		logger:   logger,
-		queue:    make(chan upload, cfg.QueueSize),
+		endpoint:  strings.TrimRight(strings.TrimSpace(cfg.Endpoint), "/") + ingestPath,
+		apiKey:    strings.TrimSpace(cfg.APIKey),
+		client:    cfg.HTTPClient,
+		timeout:   cfg.UploadTimeout,
+		logger:    logger,
+		queue:     make(chan upload, cfg.QueueSize),
+		notBefore: make(map[string]time.Time),
 	}
+}
+
+// deferred reports whether the server has asked us to hold off on this profile
+// type, and is what stops a misconfigured interval turning into a stream of
+// rejected uploads.
+func (u *uploader) deferred(profileType string) (time.Duration, bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	until, ok := u.notBefore[profileType]
+	if !ok {
+		return 0, false
+	}
+	if wait := time.Until(until); wait > 0 {
+		return wait, true
+	}
+	delete(u.notBefore, profileType)
+	return 0, false
+}
+
+// holdOff records how long the server asked us to wait.
+func (u *uploader) holdOff(profileType string, wait time.Duration) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.notBefore[profileType] = time.Now().Add(wait)
+}
+
+// retryAfter reads the header, falling back to a minute when the server sent
+// something unparseable — waiting slightly too long is harmless, and treating
+// a 429 as "send again immediately" is not.
+func retryAfter(resp *http.Response) time.Duration {
+	const fallback = time.Minute
+
+	raw := strings.TrimSpace(resp.Header.Get("Retry-After"))
+	if raw == "" {
+		return fallback
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds <= 0 {
+		return fallback
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // start launches the worker goroutine.
@@ -85,6 +143,12 @@ func (u *uploader) close() {
 // against a struggling backend costs an incident, and the next capture will be
 // along shortly anyway.
 func (u *uploader) send(job upload) {
+	if wait, held := u.deferred(job.metadata.ProfileType); held {
+		u.logger.Debugf("skipping the %s profile: the platform asked for %s between captures",
+			job.metadata.ProfileType, wait.Round(time.Second))
+		return
+	}
+
 	body, contentType, err := buildMultipart(job)
 	if err != nil {
 		u.logger.Errorf("could not build the upload body: %v", err)
@@ -109,6 +173,19 @@ func (u *uploader) send(job upload) {
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusTooManyRequests {
+		// Not an error: the account allows profiles less often than this
+		// profiler is configured to capture them. Honour the interval rather
+		// than posting a payload a minute to have it refused, and say so once
+		// at debug level instead of shouting on every capture.
+		wait := retryAfter(resp)
+		u.holdOff(job.metadata.ProfileType, wait)
+		u.logger.Debugf("the platform is pacing %s profiles; next attempt in %s",
+			job.metadata.ProfileType, wait.Round(time.Second))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		return
+	}
 
 	if resp.StatusCode >= http.StatusBadRequest {
 		// Read a little of the body: the platform's structured error explains
