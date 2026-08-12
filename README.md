@@ -180,3 +180,52 @@ export PROFILER_API_KEY=pf_live_...
 go run ./example
 curl localhost:8090/capture/cpu
 ```
+
+## Choosing what to profile, and for how long
+
+Every kind is off until you give it an interval. Set one to zero — or leave it
+out — and that kind is never captured.
+
+```go
+profiler.Start(profiler.Config{
+    APIKey:   os.Getenv("PROFILER_API_KEY"),
+    Endpoint: "https://pecgoprof.online",
+    Service:  "checkout-api",
+
+    HeapInterval:      5 * time.Minute,  // cheap snapshot; this is what shows a leak
+    GoroutineInterval: 5 * time.Minute,  // cheap; shows goroutines piling up
+    AllocsInterval:    10 * time.Minute, // where the memory came from
+    CPUInterval:       10 * time.Minute, // the only expensive one
+    MutexInterval:     0,                // off
+    BlockInterval:     0,                // off
+})
+```
+
+CPU is the one to be careful with: each capture samples for `CPUDuration`
+(thirty seconds by default), so it costs real time. Heap and goroutines are
+snapshots and are close to free — and they are the two whose value comes from a
+long line rather than a single reading, so they are the last ones to turn off.
+
+Intervals shorter than a minute are raised to a minute. The platform refuses
+captures faster than your plan allows, and a client that insists is only
+generating rejected uploads.
+
+### Stopping by itself
+
+To watch a release for a couple of hours and then stop, without a second deploy
+to turn it off:
+
+```go
+profiler.Start(profiler.Config{
+    // ...
+    StopAfter: 3 * time.Hour,
+})
+```
+
+Anything already queued still uploads; only the capturing stops. Zero, the
+default, means never stop — which is what you want for a service being watched
+for a leak, since a leak shows up over days.
+
+If you use `StopAfter`, turn off the "stopped reporting" alert for that service
+in the platform. Otherwise a profiler that did exactly what it was told will
+look like one that broke.

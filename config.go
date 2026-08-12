@@ -109,6 +109,19 @@ type Config struct {
 	MutexInterval     time.Duration
 	BlockInterval     time.Duration
 
+	// StopAfter turns the profiler off by itself, this long after Start.
+	//
+	// For the shape most people actually want: ship a build, watch it for a
+	// couple of hours, and have profiling stop without a second deploy to turn
+	// it off. Zero means never stop, which is right for a service being watched
+	// for a leak — that shows up over days, not hours.
+	//
+	// What is already queued still uploads; only the capturing stops. Pair it
+	// with the service's "stopped reporting" alert turned off in the platform,
+	// or a profiler that did exactly what it was told will look like one that
+	// broke.
+	StopAfter time.Duration
+
 	// CPUDuration is how long each CPU profile runs. Defaults to
 	// DefaultCPUDuration. It is clamped below CPUInterval, because a capture
 	// that outlives the gap to the next one would overlap itself.

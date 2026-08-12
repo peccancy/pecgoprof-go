@@ -86,3 +86,37 @@ func TestACPUCaptureCannotOverlapItself(t *testing.T) {
 		t.Errorf("a %s capture every %s overlaps itself", cfg.CPUDuration, cfg.CPUInterval)
 	}
 }
+
+// TestItStopsItself: shipping a build, watching it, and having profiling stop
+// without a second deploy to turn it off.
+func TestItStopsItself(t *testing.T) {
+	platform := newPacingPlatform(t, "")
+	platform.retryAfter = ""
+
+	p, err := Start(Config{
+		APIKey:       "k",
+		Endpoint:     platform.server.URL,
+		Service:      "svc",
+		HeapInterval: time.Minute,
+		StopAfter:    40 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	// It stops on its own; Stop is then a no-op that must not hang or panic.
+	time.Sleep(200 * time.Millisecond)
+
+	if err := p.Stop(t.Context()); err != nil {
+		t.Errorf("stopping an already-stopped profiler: %v", err)
+	}
+}
+
+// TestZeroMeansNeverStop: a service being watched for a leak is watched for
+// days, and a default that quietly expired would lose exactly that.
+func TestZeroMeansNeverStop(t *testing.T) {
+	cfg := Config{APIKey: "k", Endpoint: "http://example.invalid", Service: "svc"}.withDefaults()
+	if cfg.StopAfter != 0 {
+		t.Errorf("StopAfter defaults to %s; profiling should not expire unasked", cfg.StopAfter)
+	}
+}

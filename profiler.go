@@ -113,6 +113,12 @@ func Start(cfg Config) (*Profiler, error) {
 		go p.captureLoop(periodic.interval, periodic.name, periodic.capture)
 	}
 
+	if cfg.StopAfter > 0 {
+		p.wg.Add(1)
+		go p.stopAfter(cfg.StopAfter)
+		logger.Debugf("profiling will stop by itself in %s", cfg.StopAfter)
+	}
+
 	logger.Debugf("profiler started: service=%s environment=%s instance=%s session=%s",
 		p.metadata.Service, p.metadata.Environment, p.metadata.InstanceID, sessionID)
 
@@ -181,6 +187,30 @@ func (p *Profiler) InstanceID() string {
 
 // Enabled reports whether the profiler is actually collecting.
 func (p *Profiler) Enabled() bool { return p != nil && p.enabled }
+
+// stopAfter shuts the profiler down on a timer.
+//
+// It stops capturing and lets the queue drain, which is the same thing Stop
+// does — a profiler that switched itself off mid-upload would lose the profile
+// somebody is waiting to look at.
+func (p *Profiler) stopAfter(after time.Duration) {
+	defer p.wg.Done()
+
+	timer := time.NewTimer(after)
+	defer timer.Stop()
+
+	select {
+	case <-p.stop:
+	case <-timer.C:
+		p.logger.Debugf("profiling stopped after %s, as configured", after)
+		p.stopOnce.Do(func() {
+			close(p.stop)
+			if p.uploader != nil {
+				p.uploader.close()
+			}
+		})
+	}
+}
 
 // captureLoop takes one kind of profile on a fixed interval until Stop.
 //
